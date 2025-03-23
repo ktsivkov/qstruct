@@ -21,43 +21,19 @@ func NewFor[T any](query url.Values) (*T, error) {
 		return nil, fmt.Errorf("%w: %s", ErrUnexpectedType, typ.String())
 	}
 
-	return hydrate[T](typ, query)
-}
-
-func hydrate[T any](typ reflect.Type, query url.Values) (*T, error) {
 	result := reflect.New(typ).Interface().(*T)
 	reflection := reflect.ValueOf(result).Elem()
 	for i := 0; i < typ.NumField(); i++ {
 		typField := typ.Field(i)
-
-		name := getFieldName(typField)
-		if name == "-" {
-			continue
-		}
-
 		field := reflection.Field(i)
-		if field.Type() != reflect.TypeOf(time.Time{}) {
-			if fieldKind := field.Kind(); fieldKind == reflect.Struct || fieldKind == reflect.Array || fieldKind == reflect.Slice || fieldKind == reflect.Map {
-				name = fmt.Sprintf("%s[]", name)
-			}
-		}
-
 		if field.IsValid() && field.CanSet() {
-			var wasSet bool
-			if values, ok := query[name]; ok {
-				if err := setValueToField(field, typField.Tag, values); err != nil {
-					return nil, err
-				}
-				wasSet = true
-			} else if val, ok := typField.Tag.Lookup("default"); ok {
-				if err := setValueToField(field, typField.Tag, []string{val}); err != nil {
-					return nil, err
-				}
-				wasSet = true
+			wasHydrated, err := hydrateField(query, field, typField)
+			if err != nil {
+				return nil, err
 			}
 
 			if val, ok := typField.Tag.Lookup("validate"); ok {
-				if slices.Contains(strings.Split(val, ","), "required") && !wasSet {
+				if slices.Contains(strings.Split(val, ","), "required") && !wasHydrated {
 					return nil, fmt.Errorf("%w: %s", ErrRequired, typField.Name)
 				}
 			}
@@ -65,6 +41,39 @@ func hydrate[T any](typ reflect.Type, query url.Values) (*T, error) {
 	}
 
 	return result, nil
+}
+
+func hydrateField(query url.Values, field reflect.Value, typField reflect.StructField) (bool, error) {
+	name := getFieldName(typField)
+	if name == "-" {
+		return true, nil
+	}
+
+	hasHydrator := false
+	if strings.Contains(name, "@") { // TODO implement better
+		hasHydrator = true
+	}
+	if field.Type() != reflect.TypeOf(time.Time{}) {
+		if fieldKind := field.Kind(); fieldKind == reflect.Array || fieldKind == reflect.Slice || fieldKind == reflect.Map || (hasHydrator && fieldKind == reflect.Struct) {
+			name = fmt.Sprintf("%s[]", name)
+		}
+	}
+
+	if values, ok := query[name]; ok {
+		if err := setValueToField(field, typField.Tag, values); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	if val, ok := typField.Tag.Lookup("default"); ok {
+		if err := setValueToField(field, typField.Tag, []string{val}); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func getFieldName(typField reflect.StructField) string {
