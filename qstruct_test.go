@@ -454,10 +454,10 @@ func TestNewFor__slice(t *testing.T) {
 					Value [][]string `query:"value"`
 				}
 
-				values, _ := url.ParseQuery("value[0][0]=my value 1&value[1][0]=my value 2&value[1][1]=my value 3&value[2][3]=my value 3")
+				values, _ := url.ParseQuery("value[0][0]=my value 1&value[1][0]=my value 2&value[1][1]=my value 3&value[2][3]=my value 4")
 				res, err := qstruct.NewFor[demoStruct](values)
 				assert.NoError(t, err)
-				assert.Equal(t, &demoStruct{Value: [][]string{{"my value 1"}, {"my value 2", "my value 3"}, {"", "", "", "my value 3"}}}, res)
+				assert.Equal(t, &demoStruct{Value: [][]string{{"my value 1"}, {"my value 2", "my value 3"}, {"", "", "", "my value 4"}}}, res)
 			})
 		})
 		t.Run("combination", func(t *testing.T) {

@@ -7,93 +7,93 @@ import (
 	"reflect"
 	"regexp"
 	"strconv"
-	"strings"
 )
 
 var ErrSliceRegexMatchError = errors.New("regex matched unexpected values")
 
-func setValueToSliceField(query url.Values, field reflect.Value, typField reflect.StructField, queryPath string, queryValueIndex int) error {
-	return processIndexedSlice(query, field, typField, queryPath, queryValueIndex)
-}
-
-func processIndexedSlice(query url.Values, field reflect.Value, typField reflect.StructField, queryPath string, queryValueIndex int) error {
-	type matchStruct struct {
-		key             string
-		targetQueryPath string
-		exact           bool
-		parsedKey       int
-	}
-
-	highestKey := -1
-	appends := 0
-	matches := make([]matchStruct, 0)
-	regex := regexp.MustCompile(fmt.Sprintf("^%s\\[(\\d*)\\]", regexp.QuoteMeta(queryPath)))
-	for queryParam, values := range query {
-		if found := regex.FindStringSubmatch(queryParam); found != nil {
-			if len(found) != 2 {
-				return fmt.Errorf("%w: %s", ErrSliceRegexMatchError, queryParam)
-			}
-
-			targetQueryPath := fmt.Sprintf("%s[%s]", queryPath, found[1])
-			exact := queryParam == targetQueryPath
-			parsedKey := getIndexFromMatch(found[1])
-			matches = append(matches, matchStruct{
-				key:             found[1],
-				targetQueryPath: targetQueryPath,
-				exact:           exact,
-				parsedKey:       parsedKey,
-			})
-
-			if found[1] == "" {
-				if strings.HasSuffix(targetQueryPath, "[]") && !strings.HasSuffix(queryPath, "[]") {
-					appends += len(values)
-				} else {
-					appends++
-				}
-			} else if highestKey < parsedKey {
-				highestKey = parsedKey
-			}
-		}
+func setValueToSliceField(query url.Values, field reflect.Value, typField reflect.StructField, queryPath string) error {
+	matchesResult, err := getSliceMatches(query, queryPath)
+	if err != nil {
+		return err
 	}
 
 	reflection := reflect.New(field.Type())
 	defer field.Set(reflection.Elem())
-	size := highestKey + appends + 1
+
+	startFrom := matchesResult.highestKey + 1
+	size := startFrom + matchesResult.appends
 	slice := reflect.MakeSlice(field.Type(), size, size)
 	defer reflection.Elem().Set(slice)
 
-	startFrom := 0
-	if highestKey >= 0 {
-		startFrom = highestKey + 1
-	}
-	for _, match := range matches {
-		if match.key == "" { // Case unindexed
-			if strings.HasSuffix(match.targetQueryPath, "[]") && !strings.HasSuffix(queryPath, "[]") { // case nested
-				for i := range appends {
-					if err := hydrate(query, slice.Index(startFrom+i), typField, match.targetQueryPath, i); err != nil {
+	for key, matches := range matchesResult.matches {
+		targetQueryParam := fmt.Sprintf("%s[%s]", queryPath, key)
+		if key == "" { // Handle unindexed
+			for queryParam, match := range matches {
+				for _, queryParameter := range match {
+					if err := hydrate(url.Values{queryParam: []string{queryParameter}}, slice.Index(startFrom), typField, targetQueryParam, 0); err != nil {
 						return err
 					}
+					startFrom++
 				}
-				continue
-			}
-
-			if err := hydrate(query, slice.Index(startFrom+0), typField, match.targetQueryPath, queryValueIndex); err != nil {
-				return err
 			}
 			continue
 		}
 
-		if err := hydrate(query, slice.Index(match.parsedKey), typField, match.targetQueryPath, 0); err != nil {
+		// Handle indexed
+		if err := hydrate(matches, slice.Index(getIndexFromMatch(key)), typField, fmt.Sprintf("%s[%s]", queryPath, key), 0); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+type sliceMatches struct {
+	matches    map[string]url.Values
+	highestKey int
+	appends    int
+}
+
+func getSliceMatches(query url.Values, queryPath string) (*sliceMatches, error) {
+	regex := regexp.MustCompile(fmt.Sprintf("^%s\\[(\\d*)\\]", regexp.QuoteMeta(queryPath)))
+	matchesMap := make(map[string]url.Values)
+	highestKey := -1
+	appends := 0
+	for queryParam, values := range query {
+		if found := regex.FindStringSubmatch(queryParam); found != nil {
+			if len(found) != 2 {
+				return nil, fmt.Errorf("%w: %s", ErrSliceRegexMatchError, queryParam)
+			}
+
+			if parsedKey := getIndexFromMatch(found[1]); highestKey < parsedKey {
+				highestKey = parsedKey
+			}
+
+			if found[1] == "" {
+				appends += len(values)
+			}
+
+			if prev, ok := matchesMap[found[1]]; ok {
+				prev[queryParam] = values
+				matchesMap[found[1]] = prev
+				continue
+			}
+
+			matchesMap[found[1]] = url.Values{
+				queryParam: values,
+			}
+		}
+	}
+	return &sliceMatches{
+		matches:    matchesMap,
+		highestKey: highestKey,
+		appends:    appends,
+	}, nil
+}
+
 func getIndexFromMatch(found string) int {
 	index, err := strconv.Atoi(found)
 	if err != nil {
-		return 0
+		return -1
 	}
 
 	return index

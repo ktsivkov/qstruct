@@ -54,7 +54,7 @@ func hydrate(query url.Values, field reflect.Value, typField reflect.StructField
 
 func setFieldValue(query url.Values, field reflect.Value, typField reflect.StructField, queryPath string, queryValueIndex int) (bool, error) {
 	if field.Kind() == reflect.Slice {
-		if err := setValueToSliceField(query, field, typField, queryPath, queryValueIndex); err != nil {
+		if err := setValueToSliceField(query, field, typField, queryPath); err != nil {
 			return false, err
 		}
 
