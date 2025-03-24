@@ -413,3 +413,80 @@ func TestNewFor__time(t *testing.T) {
 		})
 	})
 }
+
+func TestNewFor__slice(t *testing.T) {
+	t.Run("from given", func(t *testing.T) {
+		t.Run("unindexed", func(t *testing.T) {
+			t.Run("flat", func(t *testing.T) {
+				type demoStruct struct {
+					Value []string `query:"value"`
+				}
+
+				values, _ := url.ParseQuery("value[]=my value 1&value[]=my value 2")
+				res, err := qstruct.NewFor[demoStruct](values)
+				assert.NoError(t, err)
+				assert.Equal(t, &demoStruct{Value: []string{"my value 1", "my value 2"}}, res)
+			})
+			t.Run("nested", func(t *testing.T) {
+				type demoStruct struct {
+					Value [][]string `query:"value"`
+				}
+
+				values, _ := url.ParseQuery("value[][]=my value 1&value[][]=my value 2")
+				res, err := qstruct.NewFor[demoStruct](values)
+				assert.NoError(t, err)
+				assert.Equal(t, &demoStruct{Value: [][]string{{"my value 1"}, {"my value 2"}}}, res)
+			})
+		})
+		t.Run("indexed", func(t *testing.T) {
+			t.Run("flat", func(t *testing.T) {
+				type demoStruct struct {
+					Value []string `query:"value"`
+				}
+
+				values, _ := url.ParseQuery("value[0]=my value 1&value[1]=my value 2")
+				res, err := qstruct.NewFor[demoStruct](values)
+				assert.NoError(t, err)
+				assert.Equal(t, &demoStruct{Value: []string{"my value 1", "my value 2"}}, res)
+			})
+			t.Run("nested", func(t *testing.T) {
+				type demoStruct struct {
+					Value [][]string `query:"value"`
+				}
+
+				values, _ := url.ParseQuery("value[0][0]=my value 1&value[1][0]=my value 2&value[1][1]=my value 3&value[2][3]=my value 3")
+				res, err := qstruct.NewFor[demoStruct](values)
+				assert.NoError(t, err)
+				assert.Equal(t, &demoStruct{Value: [][]string{{"my value 1"}, {"my value 2", "my value 3"}, {"", "", "", "my value 3"}}}, res)
+			})
+		})
+		t.Run("combination", func(t *testing.T) {
+			t.Run("indexed in unindexed", func(t *testing.T) {
+				type demoStruct struct {
+					Value [][]string `query:"value"`
+				}
+
+				values, _ := url.ParseQuery("value[][0]=my value 1&value[][1]=my value 2")
+				res, err := qstruct.NewFor[demoStruct](values)
+				assert.NoError(t, err)
+				assert.Equal(t, &demoStruct{Value: [][]string{
+					{"my value 1"},
+					{"", "my value 2"},
+				}}, res)
+			})
+			t.Run("unindexed in indexed", func(t *testing.T) {
+				type demoStruct struct {
+					Value [][]string `query:"value"`
+				}
+
+				values, _ := url.ParseQuery("value[0][]=my value 1&value[1][]=my value 2")
+				res, err := qstruct.NewFor[demoStruct](values)
+				assert.NoError(t, err)
+				assert.Equal(t, &demoStruct{Value: [][]string{
+					{"my value 1"},
+					{"my value 2"},
+				}}, res)
+			})
+		})
+	})
+}

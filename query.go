@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -21,53 +20,69 @@ func NewFor[T any](query url.Values) (*T, error) {
 		return nil, fmt.Errorf("%w: %s", ErrUnexpectedType, typ.String())
 	}
 
-	result := reflect.New(typ).Interface().(*T)
-	reflection := reflect.ValueOf(result).Elem()
+	result := reflect.New(typ)
 	for i := 0; i < typ.NumField(); i++ {
 		typField := typ.Field(i)
-		field := reflection.Field(i)
+		field := result.Elem().Field(i)
 		if field.IsValid() && field.CanSet() {
-			wasHydrated, err := hydrateField(query, field, typField)
-			if err != nil {
-				return nil, err
-			}
-
-			if val, ok := typField.Tag.Lookup("validate"); ok {
-				if slices.Contains(strings.Split(val, ","), "required") && !wasHydrated {
-					return nil, fmt.Errorf("%w: %s", ErrRequired, typField.Name)
+			if queryPath := getQueryPath(typField); queryPath != "-" {
+				if err := hydrate(query, field, typField, queryPath, 0); err != nil {
+					return nil, err
 				}
 			}
 		}
 	}
 
-	return result, nil
+	return result.Interface().(*T), nil
 }
 
-func hydrateField(query url.Values, field reflect.Value, typField reflect.StructField) (bool, error) {
-	name := getFieldName(typField)
-	if name == "-" {
-		return true, nil
+func hydrate(query url.Values, field reflect.Value, typField reflect.StructField, queryPath string, queryValueIndex int) error {
+	wasSet, err := setFieldValue(query, field, typField, queryPath, queryValueIndex)
+	if err != nil {
+		return err
 	}
 
-	hasHydrator := false
-	if strings.Contains(name, "@") { // TODO implement better
-		hasHydrator = true
-	}
-	if field.Type() != reflect.TypeOf(time.Time{}) {
-		if fieldKind := field.Kind(); fieldKind == reflect.Array || fieldKind == reflect.Slice || fieldKind == reflect.Map || (hasHydrator && fieldKind == reflect.Struct) {
-			name = fmt.Sprintf("%s[]", name)
+	// Handle validations
+	if val, ok := typField.Tag.Lookup("validate"); ok {
+		if slices.Contains(strings.Split(val, ","), "required") && !wasSet {
+			return fmt.Errorf("%w: %s", ErrRequired, typField.Name)
 		}
 	}
 
-	if values, ok := query[name]; ok {
-		if err := setValueToField(field, typField.Tag, values); err != nil {
+	return nil
+}
+
+func setFieldValue(query url.Values, field reflect.Value, typField reflect.StructField, queryPath string, queryValueIndex int) (bool, error) {
+	if field.Kind() == reflect.Slice {
+		if err := setValueToSliceField(query, field, typField, queryPath, queryValueIndex); err != nil {
+			return false, err
+		}
+
+		return true, nil
+	}
+
+	if values, ok := query[queryPath]; ok {
+		if field.Type() == reflect.TypeOf(time.Time{}) {
+			if err := setValueToTimeField(field, typField.Tag, values[queryValueIndex]); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+		if err := setValueToPrimitiveField(field, values[queryValueIndex]); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
 
+	// Handle default values
 	if val, ok := typField.Tag.Lookup("default"); ok {
-		if err := setValueToField(field, typField.Tag, []string{val}); err != nil {
+		if field.Type() == reflect.TypeOf(time.Time{}) {
+			if err := setValueToTimeField(field, typField.Tag, val); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+		if err := setValueToPrimitiveField(field, val); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -76,59 +91,10 @@ func hydrateField(query url.Values, field reflect.Value, typField reflect.Struct
 	return false, nil
 }
 
-func getFieldName(typField reflect.StructField) string {
+func getQueryPath(typField reflect.StructField) string {
 	if val, ok := typField.Tag.Lookup("query"); ok {
 		return val
 	}
 
 	return typField.Name
-}
-
-func setValueToField(field reflect.Value, tag reflect.StructTag, val []string) error {
-	if field.Type() == reflect.TypeOf(time.Time{}) {
-		timeFormat, ok := tag.Lookup("format")
-		if !ok {
-			timeFormat = time.RFC3339
-		}
-
-		t, err := time.Parse(timeFormat, val[0])
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrUnexpectedValue, err)
-		}
-		field.Set(reflect.ValueOf(t))
-		return nil
-	}
-
-	switch field.Kind() {
-	case reflect.String:
-		field.SetString(val[0])
-	case reflect.Bool:
-		parsed, err := strconv.ParseBool(val[0])
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrUnexpectedValue, err)
-		}
-		field.SetBool(parsed)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		parsed, err := strconv.ParseInt(val[0], 10, 64)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrUnexpectedValue, err)
-		}
-		field.SetInt(parsed)
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		parsed, err := strconv.ParseUint(val[0], 10, 64)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrUnexpectedValue, err)
-		}
-		field.SetUint(parsed)
-	case reflect.Float32, reflect.Float64:
-		parsed, err := strconv.ParseFloat(val[0], 64)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrUnexpectedValue, err)
-		}
-		field.SetFloat(parsed)
-	default:
-		return fmt.Errorf("unsupported kind: %s", field.Kind())
-	}
-
-	return nil
 }
